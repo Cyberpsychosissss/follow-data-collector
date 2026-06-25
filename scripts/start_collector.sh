@@ -141,29 +141,41 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
     echo "  Using mirror: ${PIP_MIRROR}"
     read -r -p "  Install dependencies now from this mirror? [y/N]: " ans
     if [ "${ans:-N}" = "y" ] || [ "${ans:-N}" = "Y" ]; then
-      # On Jetson, OpenCV is the JetPack system build — never pip-install it.
-      # Install only the pip-friendly packages; skip opencv-python.
-      JETSON=0
-      if uname -a | grep -qiE "tegra|jetson"; then JETSON=1; fi
-      if [ "${JETSON}" -eq 1 ]; then
-        warn "Jetson detected: skipping opencv-python (use the JetPack system cv2)."
-        PKGS="python-can PyYAML numpy pandas rich cantools"
+      # Detect Python minor version. Several deps dropped Python 3.6 support:
+      #   python-can>=4.0, numpy>=1.20, rich>=13, pandas>=1.2 all need 3.7+.
+      # On 3.6 we must pin to the last compatible releases.
+      PYMM="$(python3 -c 'import sys;print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null || echo 306)"
+      if [ "${PYMM}" -le 306 ]; then
+        warn "Python <=3.6 detected: pinning 3.6-compatible package versions."
+        CAN_PKG="python-can==3.3.4"   # last version supporting Python 3.6
+        OPT_PKGS="rich==12.6.0"       # optional; pandas/numpy left to system/apt
       else
-        PKGS="opencv-python python-can PyYAML numpy pandas rich cantools"
+        CAN_PKG="python-can"
+        OPT_PKGS="rich pandas cantools"
       fi
-      echo "Installing: ${PKGS}"
-      if pip3 install ${PIP_ARGS} ${PKGS}; then
-        ok "dependencies installed (mirror)"
+      # OpenCV is NEVER pip-installed here:
+      #   - Jetson/aarch64 has no opencv-python wheel; building from source is painful.
+      #   - Use the system build instead:  sudo apt-get install -y python3-opencv
+      REQUIRED="${CAN_PKG} PyYAML"
+      echo "Installing required: ${REQUIRED}"
+      if pip3 install ${PIP_ARGS} ${REQUIRED}; then
+        ok "required deps installed (mirror)"
       else
-        warn "mirror install reported problems; retrying with Aliyun mirror"
+        warn "Tsinghua mirror failed; retrying with Aliyun mirror"
         pip3 install --no-cache-dir --user \
           -i https://mirrors.aliyun.com/pypi/simple \
-          --trusted-host mirrors.aliyun.com ${PKGS} \
-          || err "automatic install failed (check internet / captive portal)"
+          --trusted-host mirrors.aliyun.com ${REQUIRED} \
+          || err "required install failed (check internet / captive portal)"
       fi
-      fix "On Jetson, verify system OpenCV separately: python3 -c 'import cv2; print(cv2.__version__)'"
+      # optional extras: best-effort, never fail the launcher
+      echo "Installing optional (best-effort): ${OPT_PKGS}"
+      pip3 install ${PIP_ARGS} ${OPT_PKGS} 2>/dev/null \
+        || warn "optional packages skipped (not required for collection)"
+      fix "OpenCV must come from apt:  sudo apt-get install -y python3-opencv"
+      fix "Then verify:  python3 -c 'import cv2; print(cv2.__version__)'"
     else
-      fix "Install later:  pip3 install --user --no-cache-dir -i ${PIP_MIRROR} python-can PyYAML numpy pandas rich"
+      fix "Install later:  pip3 install --user --no-cache-dir -i ${PIP_MIRROR} python-can==3.3.4 PyYAML"
+      fix "OpenCV:  sudo apt-get install -y python3-opencv"
     fi
   else
     fix "pip3 install -r requirements.txt"
