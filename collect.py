@@ -645,12 +645,21 @@ class CanThread(threading.Thread):
                 "Phase 1 is listen-only. Set safety.allow_can_send: false.")
             return False
         channel = self.cfg["can"]["channel"]
+        bustype = self.cfg["can"].get("interface", "socketcan")
         try:
             # receive_own_messages=False; we never transmit. This is a pure listener.
-            self.bus = can.interface.Bus(
-                channel=channel,
-                interface=self.cfg["can"].get("interface", "socketcan"),
-                receive_own_messages=False)
+            # 'bustype' is accepted by BOTH python-can 3.x (required on Python 3.6)
+            # and 4.x (where it is a deprecated alias of 'interface'). Using it keeps
+            # us compatible with python-can==3.3.4 on the Jetson.
+            try:
+                self.bus = can.interface.Bus(
+                    channel=channel, bustype=bustype,
+                    receive_own_messages=False)
+            except TypeError:
+                # very new python-can that dropped the 'bustype' alias
+                self.bus = can.interface.Bus(
+                    channel=channel, interface=bustype,
+                    receive_own_messages=False)
             with self.stats.lock:
                 self.stats.can_opened = True
                 self.stats.can_channel = channel
