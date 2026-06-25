@@ -134,20 +134,36 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
   echo
   warn "Missing/!importable packages: ${MISSING[*]}"
   if [ "${PIP_OK}" -eq 1 ] && [ -f "${REQ}" ]; then
-    read -r -p "  Install dependencies now with pip3 install -r requirements.txt? [y/N]: " ans
+    # China mirror (Tsinghua TUNA) + no-cache to avoid root-owned ~/.cache/pip
+    PIP_MIRROR="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+    PIP_HOST="$(echo "${PIP_MIRROR}" | sed -E 's#https?://([^/]+)/.*#\1#')"
+    PIP_ARGS="--no-cache-dir --user -i ${PIP_MIRROR} --trusted-host ${PIP_HOST}"
+    echo "  Using mirror: ${PIP_MIRROR}"
+    read -r -p "  Install dependencies now from this mirror? [y/N]: " ans
     if [ "${ans:-N}" = "y" ] || [ "${ans:-N}" = "Y" ]; then
-      echo "Installing..."
-      if pip3 install -r "${REQ}"; then
-        ok "dependencies installed"
+      # On Jetson, OpenCV is the JetPack system build — never pip-install it.
+      # Install only the pip-friendly packages; skip opencv-python.
+      JETSON=0
+      if uname -a | grep -qiE "tegra|jetson"; then JETSON=1; fi
+      if [ "${JETSON}" -eq 1 ]; then
+        warn "Jetson detected: skipping opencv-python (use the JetPack system cv2)."
+        PKGS="python-can PyYAML numpy pandas rich cantools"
       else
-        warn "pip install reported problems — trying --user / --break-system-packages"
-        pip3 install --user -r "${REQ}" 2>/dev/null || \
-          pip3 install --break-system-packages -r "${REQ}" 2>/dev/null || \
-          err "automatic install failed"
-        fix "On Jetson, OpenCV is often the system build; do NOT reinstall it. Test: python3 -c 'import cv2'"
+        PKGS="opencv-python python-can PyYAML numpy pandas rich cantools"
       fi
+      echo "Installing: ${PKGS}"
+      if pip3 install ${PIP_ARGS} ${PKGS}; then
+        ok "dependencies installed (mirror)"
+      else
+        warn "mirror install reported problems; retrying with Aliyun mirror"
+        pip3 install --no-cache-dir --user \
+          -i https://mirrors.aliyun.com/pypi/simple \
+          --trusted-host mirrors.aliyun.com ${PKGS} \
+          || err "automatic install failed (check internet / captive portal)"
+      fi
+      fix "On Jetson, verify system OpenCV separately: python3 -c 'import cv2; print(cv2.__version__)'"
     else
-      fix "Install later with:  pip3 install -r requirements.txt"
+      fix "Install later:  pip3 install --user --no-cache-dir -i ${PIP_MIRROR} python-can PyYAML numpy pandas rich"
     fi
   else
     fix "pip3 install -r requirements.txt"
