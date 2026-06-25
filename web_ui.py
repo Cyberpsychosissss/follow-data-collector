@@ -24,13 +24,17 @@ This server runs in a background thread started by Collector.collect() when the
 web UI is enabled (config web.enabled or chosen from the menu).
 """
 
-from __future__ import annotations
-
 import json
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from typing import Any, Callable, Dict, Optional
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """Python 3.6 backport of http.server.ThreadingHTTPServer (added in 3.7)."""
+    daemon_threads = True
 
 try:
     import cv2

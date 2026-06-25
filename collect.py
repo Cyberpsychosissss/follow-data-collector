@@ -30,8 +30,6 @@ The module is intentionally self-contained (no local package imports) so it can
 be copied to a Jetson and run directly:  python3 collect.py --config config.yaml
 """
 
-from __future__ import annotations
-
 import argparse
 import csv
 import json
@@ -44,10 +42,14 @@ import sys
 import threading
 import time
 import traceback
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+
+def now_ns():
+    """now_ns() backport for Python 3.6 (Jetson / Ubuntu 18.04)."""
+    return int(time.time() * 1000000000)
 
 # ----------------------------------------------------------------------------
 # Soft dependencies. We degrade gracefully instead of crashing on import.
@@ -169,17 +171,18 @@ DEFAULT_SUGGESTIONS = {
 }
 
 
-@dataclass
-class Issue:
-    timestamp_ns: int
-    level: str
-    component: str
-    message: str
-    suggestion: str = ""
-    exception_type: str = ""
-    exception_detail: str = ""
+class Issue(object):
+    def __init__(self, timestamp_ns, level, component, message,
+                 suggestion="", exception_type="", exception_detail=""):
+        self.timestamp_ns = timestamp_ns
+        self.level = level
+        self.component = component
+        self.message = message
+        self.suggestion = suggestion
+        self.exception_type = exception_type
+        self.exception_detail = exception_detail
 
-    def as_row(self) -> List[str]:
+    def as_row(self):
         return [str(self.timestamp_ns), self.level, self.component, self.message,
                 self.suggestion, self.exception_type, self.exception_detail]
 
@@ -249,7 +252,7 @@ class HealthMonitor:
             last = self._last_seen.get(key, 0.0)
             self._last_seen[key] = now
             self.counts[level] = self.counts.get(level, 0) + 1
-            issue = Issue(time.time_ns(), level, component, message,
+            issue = Issue(now_ns(), level, component, message,
                           suggestion, exc_type, exc_detail)
             self.ring.append(issue)
             if len(self.ring) > self.ring_size:
@@ -344,61 +347,56 @@ def add_session_file_handler(logger: logging.Logger, session_log: Path) -> None:
 # Shared statistics (read by the dashboard, written by the worker threads)
 # ============================================================================
 
-@dataclass
-class Stats:
-    lock: threading.Lock = field(default_factory=threading.Lock)
+class Stats(object):
+    def __init__(self):
+        self.lock = threading.Lock()
+        # session
+        self.session_name = ""
+        self.session_dir = ""
+        self.scenario = ""
+        self.marker_id = 0
+        self.state = "idle"          # recording / paused / stopped / idle
+        self.start_time = 0.0
+        self.pause_accum = 0.0       # total paused seconds
+        # camera
+        self.camera_source = ""
+        self.camera_opened = False
+        self.frame_w = 0
+        self.frame_h = 0
+        self.fps_target = 0.0
+        self.actual_capture_fps = 0.0
+        self.actual_save_fps = 0.0
+        self.frames_captured = 0
+        self.frames_saved = 0
+        self.dropped_frames = 0
+        self.last_frame_ts_ns = 0
+        self.last_saved_path = ""
+        self.consecutive_read_failures = 0
+        # CAN
+        self.can_enabled = False
+        self.can_channel = ""
+        self.can_opened = False
+        self.can_messages = 0
+        self.can_rate = 0.0
+        self.last_can_id = ""
+        self.last_can_data_hex = ""
+        self.last_can_ts_ns = 0
+        self.can_error_count = 0
+        # storage
+        self.dataset_dir = ""
+        self.disk_free_gb = 0.0
+        self.session_size_mb = 0.0
+        self.frames_csv_mb = 0.0
+        self.raw_can_csv_mb = 0.0
+        self.write_errors = 0
+        # queues
+        self.camera_q = 0
+        self.writer_q = 0
+        self.camera_q_max = 0
+        self.writer_q_max = 0
+        self.queue_overflow = 0
 
-    # session
-    session_name: str = ""
-    session_dir: str = ""
-    scenario: str = ""
-    marker_id: int = 0
-    state: str = "idle"          # recording / paused / stopped / idle
-    start_time: float = 0.0
-    pause_accum: float = 0.0     # total paused seconds
-
-    # camera
-    camera_source: str = ""
-    camera_opened: bool = False
-    frame_w: int = 0
-    frame_h: int = 0
-    fps_target: float = 0.0
-    actual_capture_fps: float = 0.0
-    actual_save_fps: float = 0.0
-    frames_captured: int = 0
-    frames_saved: int = 0
-    dropped_frames: int = 0
-    last_frame_ts_ns: int = 0
-    last_saved_path: str = ""
-    consecutive_read_failures: int = 0
-
-    # CAN
-    can_enabled: bool = False
-    can_channel: str = ""
-    can_opened: bool = False
-    can_messages: int = 0
-    can_rate: float = 0.0
-    last_can_id: str = ""
-    last_can_data_hex: str = ""
-    last_can_ts_ns: int = 0
-    can_error_count: int = 0
-
-    # storage
-    dataset_dir: str = ""
-    disk_free_gb: float = 0.0
-    session_size_mb: float = 0.0
-    frames_csv_mb: float = 0.0
-    raw_can_csv_mb: float = 0.0
-    write_errors: int = 0
-
-    # queues
-    camera_q: int = 0
-    writer_q: int = 0
-    camera_q_max: int = 0
-    writer_q_max: int = 0
-    queue_overflow: int = 0
-
-    def snapshot(self) -> dict:
+    def snapshot(self):
         with self.lock:
             return dict(self.__dict__)
 
@@ -519,7 +517,7 @@ class CameraThread(threading.Thread):
                     time.sleep(0.05)
                 continue
 
-            ts_ns = time.time_ns()
+            ts_ns = now_ns()
             with self.stats.lock:
                 self.stats.consecutive_read_failures = 0
                 self.stats.frames_captured += 1
@@ -695,7 +693,7 @@ class CanThread(threading.Thread):
                 continue
 
             last_msg_time = now
-            ts_ns = time.time_ns()
+            ts_ns = now_ns()
             data_hex = msg.data.hex()
             try:
                 self.raw_writer.write_row([
@@ -958,7 +956,7 @@ class Dashboard:
     def _since(self, ts_ns: int) -> str:
         if not ts_ns:
             return "n/a"
-        return f"{(time.time_ns() - ts_ns) / 1e9:0.1f}s"
+        return f"{(now_ns() - ts_ns) / 1e9:0.1f}s"
 
     # -- lifecycle -------------------------------------------------------
     def start(self):
@@ -1005,11 +1003,11 @@ def _ts(ts_ns: int) -> str:
 # Preflight checks
 # ============================================================================
 
-@dataclass
-class CheckResult:
-    name: str
-    status: str       # OK / WARN / FAIL
-    detail: str = ""
+class CheckResult(object):
+    def __init__(self, name, status, detail=""):
+        self.name = name
+        self.status = status   # OK / WARN / FAIL
+        self.detail = detail
 
 
 def disk_free_gb(path: Path) -> float:
@@ -1175,7 +1173,7 @@ class Collector:
             self._marker_id += 1
             mid = self._marker_id
             scenario = self._scenario
-        markers_writer.write_row([time.time_ns(), mid,
+        markers_writer.write_row([now_ns(), mid,
                                   text or f"marker_{mid}", scenario])
         with self.stats.lock:
             self.stats.marker_id = mid
@@ -1562,7 +1560,7 @@ class _CameraThreadCached(CameraThread):
                 else:
                     time.sleep(0.05)
                 continue
-            ts_ns = time.time_ns()
+            ts_ns = now_ns()
             _PREVIEW_CACHE["frame"] = frame  # cache for preview overlay
             with self.stats.lock:
                 self.stats.consecutive_read_failures = 0
